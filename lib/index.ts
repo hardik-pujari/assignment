@@ -1,4 +1,2 @@
-export { connectToDB } from "./db/db";
-export { User } from "./db/schema";
-export * from "./auth/auth";
-export * from "./services/userServices";
+export { supabase } from './supabase/client';
+export { createClient } from './supabase/server';

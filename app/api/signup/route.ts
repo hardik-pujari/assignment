@@ -1,63 +1,79 @@
-import { hashPassword } from "@/lib/auth/auth";
-import { generateToken } from "@/lib/jwt-edge";
-import { connectToDB } from "@/lib/db/db";
-import { createUser, findUserByEmail } from "@/lib/services/userServices";
-import { NextResponse } from "next/server";
-import { NextRequest } from "next/server";
+import { createClient } from '@/lib/supabase/server';
+import { NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 
 export async function POST(request: NextRequest) {
-  await connectToDB();
   const body = await request.json();
   const { name, email, password } = body;
 
   if (!name || !email || !password) {
-    return NextResponse.json({ error: "Missing fields" }, { status: 400 });
+    return NextResponse.json({ error: 'Missing fields' }, { status: 400 });
+  }
+
+  if (password.length < 6) {
+    return NextResponse.json({ error: 'Password must be at least 6 characters' }, { status: 400 });
   }
 
   try {
-    // check existing user
-    const existing = await findUserByEmail(email);
-    if (existing) {
+    const supabase = await createClient();
+
+    const { data: authData, error: signUpError } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: {
+          name,
+        },
+      },
+    });
+
+    if (signUpError) {
+      if (signUpError.message.includes('already registered')) {
+        return NextResponse.json(
+          { error: 'User already exists' },
+          { status: 409 }
+        );
+      }
       return NextResponse.json(
-        { error: "User already exists" },
-        { status: 409 }
+        { error: signUpError.message },
+        { status: 400 }
       );
     }
 
-    const hashedPassword = await hashPassword(password);
-    const user = await createUser(name, email, hashedPassword);
-    const userId =
-      (user as any)?._id?.toString?.() ?? String((user as any)?._id);
-    const token = generateToken(userId);
-
-    // avoid returning hashed password — handle both Mongoose document and plain object
-    let safeUser: any;
-    if (user && typeof (user as any).toObject === "function") {
-      safeUser = (user as any).toObject();
-    } else {
-      safeUser = { ...(user as any) };
+    if (!authData.user) {
+      return NextResponse.json(
+        { error: 'Failed to create user' },
+        { status: 500 }
+      );
     }
-    if (safeUser && safeUser.password) delete safeUser.password;
 
-    const response = NextResponse.json(
-      { message: "User created successfully", user: safeUser },
+    const { error: profileError } = await supabase
+      .from('profiles')
+      .insert({
+        id: authData.user.id,
+        name,
+        email,
+      });
+
+    if (profileError) {
+      console.error('Profile creation error:', profileError);
+    }
+
+    return NextResponse.json(
+      {
+        message: 'User created successfully',
+        user: {
+          id: authData.user.id,
+          email: authData.user.email,
+          name,
+        },
+      },
       { status: 201 }
     );
-
-    // set secure cookie (adjust secure flag for local dev if needed)
-    response.cookies.set("token", token, {
-      httpOnly: true,
-      sameSite: "lax",
-      path: "/",
-      secure: process.env.NODE_ENV === "production",
-      maxAge: 60 * 60, // 1 hour
-    });
-
-    return response;
   } catch (err) {
-    console.error("Signup error", err);
+    console.error('Signup error', err);
     return NextResponse.json(
-      { error: "Failed to create user" },
+      { error: 'Failed to create user' },
       { status: 500 }
     );
   }
